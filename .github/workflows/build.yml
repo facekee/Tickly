@@ -19,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 使用 UCRT64 替换已弃用的 MINGW64
+      # 设置 MSYS2，使用 UCRT64 环境
       - name: Setup MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
         with:
@@ -45,12 +45,15 @@ jobs:
           fi
           echo "Source: $CPP"
 
-          x86_64-w64-ucrt-windres --codepage=65001 resource.rc -O coff -o resource.o
-          x86_64-w64-ucrt-g++ -std=c++17 -O2 -municode -mwindows -static \
+          # 直接使用 UCRT64 环境自带的命令，无需前缀
+          windres --codepage=65001 resource.rc -O coff -o resource.o
+          
+          g++ -std=c++17 -O2 -municode -mwindows -static \
             "$CPP" resource.o -o Tickly.exe \
             -luser32 -lgdi32 -ladvapi32 -lshell32 -lcomctl32 -lcomdlg32
 
-          x86_64-w64-ucrt-strip Tickly.exe
+          # 去除符号表
+          strip Tickly.exe
           ls -lh Tickly.exe
 
       - name: Upload portable EXE
