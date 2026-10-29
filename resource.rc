@@ -1,13 +1,30 @@
+// ============================================================================
+//  Windows 资源脚本 —— 图标与清单都必须在这里登记，否则 exe 会「没图标 + 文字糊」
+//
+//  1) 图标：**必须是数值 ID 1**
+//     源码里取图标用的是 LoadIconW(hInst, MAKEINTRESOURCEW(1)) 与
+//     LoadImageW(..., MAKEINTRESOURCEW(1), ...)（窗口类 + 托盘）。
+//     以前这里写成 IDI_APPLICATION，它经 <windows.h> 预处理后是
+//     MAKEINTRESOURCE(32512)，资源就被登记在 32512 名下，运行时按 1 找不到，
+//     于是回退成系统默认白板图标 —— 看上去就是「打包后没有图标」。
+//
+//  2) 清单（RT_MANIFEST = 24）：声明 DPI 感知
+//     缺它时进程是 DPI 不感知的，在 125%/150% 缩放下 Windows 先把窗口按
+//     96 DPI 画好、再整幅位图拉伸，文字边缘必然发虚。
+//
+//  3) 版本信息：FileVersion / ProductVersion 需与源码里的版本号同步
+// ============================================================================
 #include <windows.h>
 
-// 1 号图标（必需，源码中托盘/窗口图标均依赖此 ID）
-// 若你有独立的 Tickly.ico 文件，请使用：1 ICON "Tickly.ico"
-// 若暂时没有图标文件，可先用系统默认图标占位：
-IDI_APPLICATION ICON DISCARDABLE "app.ico" 
+// ---- 应用图标（窗口标题栏、任务栏、exe 文件图标、托盘共用）----
+1 ICON "app.ico"
+
+// ---- DPI 感知清单 ----
+1 24 "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,13,23,0
-PRODUCTVERSION  1,13,23,0
+FILEVERSION     1,13,24,0
+PRODUCTVERSION  1,13,24,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -20,9 +37,9 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Tickly"
             VALUE "FileDescription",  "Tickly待办"
-            VALUE "FileVersion",      "1.13.23"
+            VALUE "FileVersion",      "1.13.24"
             VALUE "ProductName",      "Tickly"
-            VALUE "ProductVersion",   "1.13.23"
+            VALUE "ProductVersion",   "1.13.24"
         END
     END
     BLOCK "VarFileInfo"

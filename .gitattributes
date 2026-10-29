@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# 二进制资源不能被换行符转换，否则图标数据会损坏
+*.ico binary
+*.exe binary

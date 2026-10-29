@@ -13,48 +13,101 @@ permissions:
 
 jobs:
   build:
+    # windows-latest 预装 Visual Studio + Windows SDK，无需再装 MSYS2/MinGW
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 设置 MSYS2，使用 UCRT64 环境
-      - name: Setup MSYS2 (UCRT64)
-        uses: msys2/setup-msys2@v2
+      # 把 cl.exe / rc.exe / link.exe 及其环境变量注入后续步骤
+      - name: Setup MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
+          arch: x64
 
-      - name: Compile single portable EXE
-        shell: msys2 {0}
+      - name: Build (Release, static CRT, single exe)
+        shell: pwsh
         run: |
-          set -e
+          $ErrorActionPreference = 'Stop'
 
-          CPP=$(ls *.cpp 2>/dev/null | head -1 || true)
-          if [ -z "$CPP" ]; then
-            echo "::error::仓库根目录未找到 .cpp 源文件"
-            exit 1
-          fi
-          
-          if [ ! -f resource.rc ]; then
-            echo "::error::未找到 resource.rc（必须包含 ID 为 1 的图标）"
-            exit 1
-          fi
-          echo "Source: $CPP"
+          # 按版本号挑最新源码：字典序会把 v1.13.9 排在 v1.13.23 之后
+          $src = Get-ChildItem *.cpp |
+                 Where-Object { $_.Name -match '^Tickly_v\d+(\.\d+)+\.cpp$' } |
+                 Sort-Object { [version]($_.Name -replace '^Tickly_v|\.cpp$', '') } |
+                 Select-Object -Last 1
+          if (-not $src) { throw "仓库根目录没有 Tickly_v*.cpp 源文件" }
 
-          # 直接使用 UCRT64 环境自带的命令，无需前缀
-          windres --codepage=65001 resource.rc -O coff -o resource.o
-          
-          g++ -std=c++17 -O2 -municode -mwindows -static \
-            "$CPP" resource.o -o Tickly.exe \
-            -luser32 -lgdi32 -ladvapi32 -lshell32 -lcomctl32 -lcomdlg32
+          foreach ($f in 'resource.rc', 'app.manifest', 'app.ico') {
+            if (-not (Test-Path $f)) { throw "缺少 $f（图标 / DPI 清单都靠它打进 exe）" }
+          }
+          Write-Host "Source: $($src.Name)"
 
-          # 去除符号表
-          strip Tickly.exe
-          ls -lh Tickly.exe
+          # 图标（ID 1）与 DPI 感知清单都在 resource.rc 里；/c 65001 保证中文版本信息不乱码
+          # rc.exe 通常已在 PATH（windows-latest 的 SDK 已注册到 VS）；
+          # 自建 runner 上若没注册，就退回最新的 SDK 目录自己找
+          $rc = (Get-Command rc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $rc) {
+            $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+            $rc = Get-ChildItem $kits -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '^\d+(\.\d+)+$' -and
+                                 (Test-Path (Join-Path $_.FullName 'x64\rc.exe')) } |
+                  Sort-Object { [version]$_.Name } -Descending |
+                  ForEach-Object { Join-Path $_.FullName 'x64\rc.exe' } |
+                  Select-Object -First 1
+          }
+          if (-not $rc) { throw "找不到 rc.exe（Windows SDK 未安装？）" }
+          Write-Host "rc: $rc"
+          & $rc /nologo /c 65001 /fo resource.res resource.rc
+          if ($LASTEXITCODE -ne 0) { throw "rc.exe 编译资源失败" }
+
+          # /utf-8   源码与执行字符集都用 UTF-8（否则中文串在 en-US runner 上会乱）
+          # /MT      静态链接 C 运行库 -> 单 exe，不依赖 VC++ 运行库
+          # /O2 /Gy  优化 + 函数级链接，配合 /OPT:REF,ICF 去掉无用代码
+          cl /nologo /utf-8 /std:c++17 /O2 /Gy /EHsc /MT /W3 `
+             $src.Name resource.res `
+             /Fe:Tickly.exe `
+             /link /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF `
+             user32.lib gdi32.lib advapi32.lib shell32.lib comctl32.lib `
+             comdlg32.lib ole32.lib
+          if ($LASTEXITCODE -ne 0) { throw "cl.exe 编译失败" }
+
+          Get-Item Tickly.exe | Select-Object Name, Length | Format-Table
+
+      # 在线打包踩过的两个坑：图标资源 ID 不对（窗口没图标）、清单没链上（文字发虚）。
+      # 这里用「程序真实取图标的方式」（LoadIcon(ID=1)）直接验证，避免以后改 CI 又回归
+      - name: Verify icon (ID 1) + DPI manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import ctypes, os, sys
+
+          exe = "Tickly.exe"
+          if not os.path.exists(exe):
+              sys.exit("Tickly.exe 未生成")
+
+          k = ctypes.WinDLL("kernel32", use_last_error=True)
+          k.LoadLibraryExW.restype = ctypes.c_void_p
+          k.LoadLibraryExW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32]
+          u = ctypes.WinDLL("user32", use_last_error=True)
+          u.LoadIconW.restype = ctypes.c_void_p
+          u.LoadIconW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+          # LOAD_LIBRARY_AS_DATAFILE = 0x2：把 exe 当资源库打开，和程序运行时一致
+          h = k.LoadLibraryExW(exe, None, 0x2)
+          if not h:
+              sys.exit("无法以资源方式打开 exe")
+          if not u.LoadIconW(ctypes.c_void_p(h), ctypes.c_void_p(1)):
+              sys.exit("exe 里没有 ID=1 的图标组 -> 窗口/任务栏/托盘会显示系统默认图标")
+          print("OK: icon group id 1 found")
+
+          data = open(exe, "rb").read()
+          if b"PerMonitorV2" not in data:
+              sys.exit("exe 里没有 DPI 感知清单 -> 非 100% 缩放下文字会被位图拉伸发虚")
+          print("OK: DPI manifest embedded (PerMonitorV2)")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "资源校验失败" }
 
       - name: Upload portable EXE
         uses: actions/upload-artifact@v4
