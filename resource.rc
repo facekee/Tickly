@@ -1,0 +1,32 @@
+#include <windows.h>
+
+// 1 号图标（必需，源码中托盘/窗口图标均依赖此 ID）
+// 若你有独立的 Tickly.ico 文件，请使用：1 ICON "Tickly.ico"
+// 若暂时没有图标文件，可先用系统默认图标占位：
+IDI_APPLICATION ICON DISCARDABLE "icon.ico" 
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,13,23,0
+PRODUCTVERSION  1,13,23,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"   // 简体中文
+        BEGIN
+            VALUE "CompanyName",      "Tickly"
+            VALUE "FileDescription",  "Tickly 待办"
+            VALUE "FileVersion",      "1.13.23"
+            VALUE "ProductName",      "Tickly"
+            VALUE "ProductVersion",   "1.13.23"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
