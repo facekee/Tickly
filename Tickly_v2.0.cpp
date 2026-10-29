@@ -49,6 +49,14 @@
 #define MOD_NOREPEAT 0x4000   // RegisterHotKey：按住不重复触发（Vista+）
 #endif
 
+// ---------------------------- 版本号（唯一来源）-----------------------------
+// 界面提示（设置对话框里的状态行）只从这里取版本号，不要再各写各的 ——
+// 之前 4 条提示各带一份 "v1.13.x"，改版本时最容易漏改其中一条。
+// 改版本时需同步三处：本宏、文件名 Tickly_vX.Y.cpp、resource.rc 的 FILEVERSION
+// （CI 会校验后两者与此处导出的 exe 版本是否一致）。
+#define TICKLY_VERSION   L"2.0"
+#define TICKLY_VER_PFX   L"v" TICKLY_VERSION      // 界面显示用："v2.0"
+
 // ---------------------------- 控件 ID --------------------------------------
 static const int IDC_INPUT      = 1001;
 static const int IDC_BTN_ADD    = 1002;
@@ -4421,16 +4429,16 @@ static void OpenSettings() {
     wchar_t trayStat[128];
     if (!g_nidAdded)
         lstrcpynW(trayStat,
-                  L"v2.0 · 托盘小图标添加失败，5 秒后自动重试；若一直失败请重启资源管理器", 128);
+                  TICKLY_VER_PFX L" · 托盘小图标添加失败，5 秒后自动重试；若一直失败请重启资源管理器", 128);
     else if (g_trayRollback)
         lstrcpynW(trayStat,
-                  L"v2.0 · 图标已回退为系统默认：收纳在右下角「^」折叠区内，一定显示", 128);
+                  TICKLY_VER_PFX L" · 图标已回退为系统默认：收纳在右下角「^」折叠区内，一定显示", 128);
     else if (g_trayPromoted)
         lstrcpynW(trayStat,
-                  L"v2.0 · 托盘小图标常驻任务栏右下角（智能心跳保活）", 128);
+                  TICKLY_VER_PFX L" · 托盘小图标常驻任务栏右下角（智能心跳保活）", 128);
     else
         lstrcpynW(trayStat,
-                  L"v2.0 · 托盘小图标可能收纳在右下角「^」折叠区内（智能心跳保活）", 128);
+                  TICKLY_VER_PFX L" · 托盘小图标可能收纳在右下角「^」折叠区内（智能心跳保活）", 128);
     static std::wstring hkStat;               // 状态行持有的字符串（对话框生存期）
     hkStat = HotkeyStatusText();
     std::vector<DlgItem> items = {
@@ -4516,7 +4524,7 @@ static void OpenSettings() {
         { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,
           118, 253, 48, 14, (WORD)IDCANCEL, CLS_BUTTON, L"取消" },
     };
-    DLGTEMPLATE* tpl = BuildDialog(L"设置", 230, 278, items);
+    DLGTEMPLATE* tpl = BuildDialog(L"设置 · " TICKLY_VER_PFX, 230, 278, items);
     DialogBoxIndirectParam(GetModuleHandleW(nullptr), tpl, g_hwnd,
                            SettingsDlgProc, 0);
     std::free(tpl);
