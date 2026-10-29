@@ -3,21 +3,23 @@ name: Build Tickly Portable EXE
 on:
   push:
     branches: [ "main" ]
-  tags: [ "v*" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-      # 1. 检出代码（升级到 v6 消除 Node.js 20 警告）
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      # 2. 设置 MSYS2（使用 UCRT64 替代已弃用的 MINGW64）
+      # 使用 UCRT64 替换已弃用的 MINGW64
       - name: Setup MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
         with:
@@ -26,47 +28,31 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-gcc
 
-      # 3. 编译单文件便携版 EXE
       - name: Compile single portable EXE
         shell: msys2 {0}
         run: |
           set -e
 
-          # 自动查找源文件（适配 Tickly_v1.13.23.cpp 等带版本号的文件名）
           CPP=$(ls *.cpp 2>/dev/null | head -1 || true)
           if [ -z "$CPP" ]; then
             echo "::error::仓库根目录未找到 .cpp 源文件"
             exit 1
           fi
-
-          # 检查资源文件是否存在，不存在则给出明确提示
+          
           if [ ! -f resource.rc ]; then
-            echo "::error::未找到 resource.rc，请先在仓库根目录创建该文件（需包含 ID 为 1 的图标）"
+            echo "::error::未找到 resource.rc（必须包含 ID 为 1 的图标）"
             exit 1
           fi
           echo "Source: $CPP"
 
-          # 资源编译：必须带 --codepage=65001（UTF-8），否则中文版本信息乱码
           x86_64-w64-ucrt-windres --codepage=65001 resource.rc -O coff -o resource.o
-
-          # -static：静态链接，产物不依赖任何第三方 DLL
-          # -municode：入口点为 wWinMain；-mwindows：GUI 子系统（无控制台）
           x86_64-w64-ucrt-g++ -std=c++17 -O2 -municode -mwindows -static \
             "$CPP" resource.o -o Tickly.exe \
             -luser32 -lgdi32 -ladvapi32 -lshell32 -lcomctl32 -lcomdlg32
 
-          # 去除符号表，减小体积
           x86_64-w64-ucrt-strip Tickly.exe
           ls -lh Tickly.exe
 
-      # 4. 验证导入表（可选，但建议保留）
-      - name: Verify no third-party DLL dependencies
-        shell: msys2 {0}
-        run: |
-          echo "== Imported DLLs =="
-          x86_64-w64-ucrt-objdump -p Tickly.exe | grep -i "DLL Name" || true
-
-      # 5. 上传产物
       - name: Upload portable EXE
         uses: actions/upload-artifact@v4
         with:
@@ -74,7 +60,6 @@ jobs:
           path: Tickly.exe
           if-no-files-found: error
 
-      # 6. 打标签时自动创建 Release
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
