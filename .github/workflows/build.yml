@@ -1,0 +1,77 @@
+name: Build Tickly Portable EXE
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 (MinGW-w64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Compile single portable EXE
+        shell: msys2 {0}
+        run: |
+          set -e
+
+          # 自动找源文件（适配 Tickly_v1.13.23.cpp 这种带版本号的文件名）
+          CPP=$(ls *.cpp 2>/dev/null | head -1 || true)
+          if [ -z "$CPP" ]; then
+            echo "::error::仓库根目录未找到 .cpp 源文件"
+            exit 1
+          fi
+          if [ ! -f resource.rc ]; then
+            echo "::error::未找到 resource.rc（图标/版本信息资源，源码里 LoadIconW(MAKEINTRESOURCEW(1)) 依赖它）"
+            exit 1
+          fi
+          echo "Source: $CPP"
+
+          # 资源编译：必须带 --codepage=65001（UTF-8），否则版本信息中文乱码
+          x86_64-w64-mingw32-windres --codepage=65001 resource.rc -O coff -o resource.o
+
+          # -static：静态链接 libgcc/libstdc++/winpthread，产物不依赖任何第三方 DLL
+          # -municode：入口点 wWinMain；-mwindows：GUI 子系统（无控制台）
+          x86_64-w64-mingw32-g++ -std=c++17 -O2 -municode -mwindows -static \
+            "$CPP" resource.o -o Tickly.exe \
+            -luser32 -lgdi32 -ladvapi32 -lshell32 -lcomctl32 -lcomdlg32
+
+          # 去掉符号表，体积更小（便携分发无影响）
+          x86_64-w64-mingw32-strip Tickly.exe
+          ls -lh Tickly.exe
+
+      - name: Verify no third-party DLL dependencies
+        shell: msys2 {0}
+        run: |
+          echo "== Imported DLLs =="
+          x86_64-w64-mingw32-objdump -p Tickly.exe | grep -i "DLL Name" || true
+          echo
+          echo "预期：只出现 Windows 系统 DLL（KERNEL32 / USER32 / GDI32 / ...）"
+          echo "若出现 libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll，说明 -static 没生效"
+
+      - name: Upload portable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tickly-portable
+          path: Tickly.exe
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Tickly.exe
