@@ -4,7 +4,7 @@
 //  构建：推荐 GitHub Actions 的 MSVC 方式（windows-latest 自带的 cl.exe，
 //        见 .github/workflows/build.yml）：
 //    rc  /nologo /c 65001 /fo resource.res resource.rc
-//    cl  /nologo /utf-8 /std:c++17 /O2 /Gy /EHsc /MT Tickly_v1.13.24.cpp \
+//    cl  /nologo /utf-8 /std:c++17 /O2 /Gy /EHsc /MT Tickly_v2.0.cpp \
 //        resource.res /link /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF \
 //        user32.lib gdi32.lib advapi32.lib shell32.lib comctl32.lib \
 //        comdlg32.lib ole32.lib
@@ -12,7 +12,7 @@
 //        也可用 mingw-w64（windres 必须带 --codepage=65001，否则版本信息里的
 //        中文在文件属性中显示为乱码）：
 //    windres --codepage=65001 resource.rc -O coff -o resource.o
-//    g++ -std=c++17 -O2 -municode -mwindows -static Tickly_v1.13.24.cpp \
+//    g++ -std=c++17 -O2 -municode -mwindows -static Tickly_v2.0.cpp \
 //        resource.o -o Tickly.exe -luser32 -lgdi32 -ladvapi32 -lshell32 \
 //        -lcomctl32 -lcomdlg32
 //
@@ -620,7 +620,7 @@ static HFONT MakeFontBold(int pxHeight) {   // 真加粗（FW_BOLD），提醒�
                        L"Microsoft YaHei UI");
 }
 
-// v1.13.24：把「尺寸随 DPI 变化」的 GDI 资源集中到一处创建/重建。
+// v2.0：把「尺寸随 DPI 变化」的 GDI 资源集中到一处创建/重建。
 // 启动时调一次；收到 WM_DPICHANGED（拖到不同缩放比的显示器、系统缩放改了）
 // 时再调一次，字体按新 DPI 重新建，文字才不会发虚。
 // 注意：任务/分组/日期字体由 ApplyFontSettings() 按用户设置重建，不在这里。
@@ -4421,16 +4421,16 @@ static void OpenSettings() {
     wchar_t trayStat[128];
     if (!g_nidAdded)
         lstrcpynW(trayStat,
-                  L"v1.13.24 · 托盘小图标添加失败，5 秒后自动重试；若一直失败请重启资源管理器", 128);
+                  L"v2.0 · 托盘小图标添加失败，5 秒后自动重试；若一直失败请重启资源管理器", 128);
     else if (g_trayRollback)
         lstrcpynW(trayStat,
-                  L"v1.13.24 · 图标已回退为系统默认：收纳在右下角「^」折叠区内，一定显示", 128);
+                  L"v2.0 · 图标已回退为系统默认：收纳在右下角「^」折叠区内，一定显示", 128);
     else if (g_trayPromoted)
         lstrcpynW(trayStat,
-                  L"v1.13.24 · 托盘小图标常驻任务栏右下角（智能心跳保活）", 128);
+                  L"v2.0 · 托盘小图标常驻任务栏右下角（智能心跳保活）", 128);
     else
         lstrcpynW(trayStat,
-                  L"v1.13.24 · 托盘小图标可能收纳在右下角「^」折叠区内（智能心跳保活）", 128);
+                  L"v2.0 · 托盘小图标可能收纳在右下角「^」折叠区内（智能心跳保活）", 128);
     static std::wstring hkStat;               // 状态行持有的字符串（对话框生存期）
     hkStat = HotkeyStatusText();
     std::vector<DlgItem> items = {
@@ -6016,7 +6016,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_DPICHANGED: {
-        // v1.13.24：跨显示器拖动或系统缩放比例变化。用新 DPI 重建字体/画笔，
+        // v2.0：跨显示器拖动或系统缩放比例变化。用新 DPI 重建字体/画笔，
         // 再按系统建议矩形改窗口大小 —— 否则窗口尺寸与字号仍是旧比例
         UINT nd = HIWORD(wParam);          // Y 轴 DPI（X/Y 通常一致）
         if (nd) g_dpi = nd;
@@ -6458,7 +6458,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 // ---------------------------- DPI 感知 --------------------------------------
-// v1.13.24：进程必须声明 DPI 感知，否则在 125%/150%/175% 这类非 100% 缩放的
+// v2.0：进程必须声明 DPI 感知，否则在 125%/150%/175% 这类非 100% 缩放的
 // 屏幕上，Windows 会先把整个窗口按 96 DPI 画好再做整幅位图拉伸，文字边界
 // 被插值模糊 —— 这就是「打包版文字发虚」的根因（GDI 字体本身没有问题）。
 // 正常路径由内嵌清单 app.manifest 声明（PerMonitorV2）；下面这段是运行时兜底，
@@ -6478,7 +6478,7 @@ static void EnableDpiAwareness() {
 
 // ---------------------------- 入口 ------------------------------------------
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
-    // v1.13.24：必须在任何窗口/DC 创建之前声明 DPI 感知
+    // v2.0：必须在任何窗口/DC 创建之前声明 DPI 感知
     EnableDpiAwareness();
 
     // 单实例：同一时刻只允许一个 Tickly 进程。重复双击 exe 时不再启动
@@ -6505,7 +6505,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     INITCOMMONCONTROLSEX icc { sizeof(icc), ICC_DATE_CLASSES | ICC_HOTKEY_CLASS };
     InitCommonControlsEx(&icc);          // 日期时间选择器（DTP）+ 热键控件（v1.12.0）
 
-    // v1.13.24：标题/副标题/气泡/提醒字体与对勾画笔集中创建（随 DPI 重建）
+    // v2.0：标题/副标题/气泡/提醒字体与对勾画笔集中创建（随 DPI 重建）
     CreateUiResources();
     g_fontGroup   = MakeFont(g_grpFontSize);   // v1.13.0 分组字体（大小可设置）
     g_fontGroupBold = MakeFont(g_grpFontSize, true);   // v0.25 未完成分组标题加粗
@@ -6522,7 +6522,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
-    // v1.13.24：大/小图标都按系统当前尺寸取（标题栏与任务栏各自命中最合适的
+    // v2.0：大/小图标都按系统当前尺寸取（标题栏与任务栏各自命中最合适的
     // 一张），而不是把 32x32 直接塞给小图标位再缩小 —— 那会糊成一团
     wc.hIcon         = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON,
                                          GetSystemMetrics(SM_CXICON),

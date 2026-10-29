@@ -43,6 +43,27 @@ jobs:
           }
           Write-Host "Source: $($src.Name)"
 
+          # 版本号一致性：文件名 Tickly_v2.0.cpp -> 2.0.0.0，必须与 resource.rc 的
+          # FILEVERSION、app.manifest 的 assemblyIdentity 完全一致（改版本时漏改
+          # 其中一个，这里会直接失败，而不是产出一个版本号互相矛盾的 exe）
+          $nums = ($src.BaseName -replace '^Tickly_v', '').Split('.')
+          while ($nums.Count -lt 4) { $nums += '0' }
+          $ver = $nums[0..3] -join '.'
+
+          $rcTxt = Get-Content resource.rc -Raw
+          if ($rcTxt -notmatch 'FILEVERSION\s+(\d+),(\d+),(\d+),(\d+)') {
+            throw "resource.rc 里找不到 FILEVERSION"
+          }
+          $rcVer = "$($matches[1]).$($matches[2]).$($matches[3]).$($matches[4])"
+          if ($rcVer -ne $ver) {
+            throw "版本号不一致：源码 $($src.Name) 对应 $ver，resource.rc FILEVERSION 是 $rcVer"
+          }
+          $mfTxt = Get-Content app.manifest -Raw
+          if ($mfTxt -match 'version="(\d+\.\d+\.\d+\.\d+)"' -and $matches[1] -ne $ver) {
+            throw "版本号不一致：app.manifest 是 $($matches[1])，期望 $ver"
+          }
+          Write-Host "Version: $ver (源码 / resource.rc / app.manifest 一致)"
+
           # 图标（ID 1）与 DPI 感知清单都在 resource.rc 里；/c 65001 保证中文版本信息不乱码
           # rc.exe 通常已在 PATH（windows-latest 的 SDK 已注册到 VS）；
           # 自建 runner 上若没注册，就退回最新的 SDK 目录自己找

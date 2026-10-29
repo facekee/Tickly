@@ -7,6 +7,8 @@ Tickly.exe
 *.exp
 *.lib
 build/
+bulid/
+backup/
 
 # 编辑器/Agent 本地状态（工作记录、临时产物），不属于项目源码
 .workbuddy/
