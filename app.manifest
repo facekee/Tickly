@@ -1,8 +1,20 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 
-  <assemblyIdentity type="win32" name="Tickly.App" version="2.0.0.0"
+  <assemblyIdentity type="win32" name="Tickly.App" version="2.3.1.0"
                     processorArchitecture="*"/>
+
+  <!-- 视觉样式（comctl32 v6）：没有这段时，复选框/单选钮画的是固定 13px 的
+       经典位图，不随 DPI 缩放 —— 在 150%/175% 缩放下就显得又小又糊，和旁边的
+       文字完全不匹配。加上后按钮、复选框、单选钮、编辑框、日期选择器都走
+       主题绘制，并按当前 DPI 取正确尺寸。 -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
+                        version="6.0.0.0" processorArchitecture="*"
+                        publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
 
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>

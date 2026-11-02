@@ -4,7 +4,7 @@
 //  构建：推荐 GitHub Actions 的 MSVC 方式（windows-latest 自带的 cl.exe，
 //        见 .github/workflows/build.yml）：
 //    rc  /nologo /c 65001 /fo resource.res resource.rc
-//    cl  /nologo /utf-8 /std:c++17 /O2 /Gy /EHsc /MT Tickly_v2.0.cpp \
+//    cl  /nologo /utf-8 /std:c++17 /O2 /Gy /EHsc /MT Tickly_v2.3.1.cpp \
 //        resource.res /link /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF \
 //        user32.lib gdi32.lib advapi32.lib shell32.lib comctl32.lib \
 //        comdlg32.lib ole32.lib
@@ -12,7 +12,7 @@
 //        也可用 mingw-w64（windres 必须带 --codepage=65001，否则版本信息里的
 //        中文在文件属性中显示为乱码）：
 //    windres --codepage=65001 resource.rc -O coff -o resource.o
-//    g++ -std=c++17 -O2 -municode -mwindows -static Tickly_v2.0.cpp \
+//    g++ -std=c++17 -O2 -municode -mwindows -static Tickly_v2.3.1.cpp \
 //        resource.o -o Tickly.exe -luser32 -lgdi32 -ladvapi32 -lshell32 \
 //        -lcomctl32 -lcomdlg32
 //
@@ -54,8 +54,8 @@
 // 之前 4 条提示各带一份 "v1.13.x"，改版本时最容易漏改其中一条。
 // 改版本时需同步三处：本宏、文件名 Tickly_vX.Y.cpp、resource.rc 的 FILEVERSION
 // （CI 会校验后两者与此处导出的 exe 版本是否一致）。
-#define TICKLY_VERSION   L"2.0"
-#define TICKLY_VER_PFX   L"v" TICKLY_VERSION      // 界面显示用："v2.0"
+#define TICKLY_VERSION   L"2.3.1"
+#define TICKLY_VER_PFX   L"v" TICKLY_VERSION      // 界面显示用："v2.3.1"
 
 // ---------------------------- 控件 ID --------------------------------------
 static const int IDC_INPUT      = 1001;
@@ -210,7 +210,17 @@ static void UpdateButtons();  // 前置声明（早于定义使用）
 static void CheckReminders(); // 前置声明（设置对话框早于定义使用）
 static void OpenSettings();   // 前置声明（托盘菜单早于定义使用）
 static void Layout();         // 前置声明（v1.12.0 输入框长高时重排布）
-static void CenterInput();    // 前置声明（v1.12.0 输入框行数变化时重算内边距）
+static void CenterInput(bool force = false);   // 前置声明（v1.12.0 输入框行数变化时重算内边距）
+
+// v2.1：输入框格式矩形（EM_SETRECT）的缓存。
+// 原因：WM_SETFONT 会让 EDIT 把格式矩形丢掉、变回整块客户区（实测：
+// EM_SETRECT 设成 0,10,200,26 后发 WM_SETFONT，EM_GETRECT 读回 3,0,194,27），
+// 而缓存还记着「上次已经设成居中」—— CenterInput 于是误判无变化直接返回，
+// 单行文字与光标就贴在顶部，不再垂直居中。
+// 因此凡是「动过字体 / 可能让 EDIT 丢弃格式矩形」的地方，都要先失效这份缓存。
+static RECT s_inFmtRect  {};
+static bool s_inFmtValid = false;
+static void InvalidateInputFmtRect() { s_inFmtValid = false; }
 
 // ---------------------------- 全局控件 -------------------------------------
 static HWND   g_hwnd      = nullptr;
@@ -514,6 +524,10 @@ static void ApplyTheme() {
     if (g_hwnd)  InvalidateRect(g_hwnd, nullptr, TRUE);
     if (g_list)  InvalidateRect(g_list, nullptr, FALSE);
     if (g_input) InvalidateRect(g_input, nullptr, TRUE);
+    // v2.1：切外观后强制对齐一次输入框格式矩形。切主题会改 DWM 边框/标题栏
+    // 属性，可能连带触发 WM_SIZE 重排；重排后 EDIT 的居中矩形若没重设，
+    // 单行文字与光标会偏上。这里无视缓存强制重设一遍（代价是一次 EM_SETRECT）
+    if (g_input) CenterInput(true);
 }
 
 // 勾选框热区：行左缘 ~ 40 DIP（框绘制在 left+12~left+30，热区含前后缓冲），
@@ -2077,7 +2091,13 @@ static void ApplyFontSettings() {
     nf = MakeFont(g_dtFontSize);         // v0.26：日期时间字体大小可设置
     if (g_fontDate) DeleteObject(g_fontDate);
     g_fontDate = nf;
-    if (g_input) SendMessageW(g_input, WM_SETFONT, (WPARAM)g_font, TRUE);
+    if (g_input) {
+        SendMessageW(g_input, WM_SETFONT, (WPARAM)g_font, TRUE);
+        // v2.1：WM_SETFONT 会把 EM_SETRECT 设过的格式矩形清成整块客户区，
+        // 缓存必须失效，否则下面 Layout/CenterInput 会误判「没变化」跳过重设，
+        // 表现为「设置里保存后，顶部输入框的光标靠上、不居中」
+        InvalidateInputFmtRect();
+    }
     RebuildRows();                       // 行高/折行随字号变化，重建前缀和
     Layout();
     CenterInput();
@@ -4268,6 +4288,103 @@ static const int IDC_RB_THEME_L  = 2113; // v0.27 外观：浅色
 static const int IDC_RB_THEME_D  = 2114; // v0.27 外观：深色
 static const int IDC_RB_THEME_S  = 2115; // v0.27 外观：跟随系统（默认）
 
+// ---------------------------- 设置对话框：自绘复选/单选（v2.3） --------------
+// 为什么不用系统控件：带视觉样式（comctl32 v6）后，复选框/单选钮的**文字颜色**
+// 由主题决定（恒为黑色），WM_CTLCOLORBTN 里的 SetTextColor 被忽略 ——
+// 深色对话框上就变成「黑字看不见」。自绘后文字统一用 COL_TEXT，图形尺寸按
+// 当前字体高度取，两套主题下都清晰；顺带和主界面的圆角勾选框风格一致。
+static void RepaintChoiceCtrls(HWND h) {
+    const int ids[] = { IDC_CK_REMIND, IDC_CK_AUTORUN, IDC_CK_TRAYRUN,
+                        IDC_RB_THEME_L, IDC_RB_THEME_D, IDC_RB_THEME_S };
+    for (int id : ids)
+        if (HWND c = GetDlgItem(h, id)) InvalidateRect(c, nullptr, TRUE);
+}
+
+static void DrawDlgChoice(HDC dc, const RECT& rc, const wchar_t* text,
+                          bool checked, bool radio, bool focus) {
+    FillSolid(dc, rc, COL_BG);                 // 先铺对话框底色（深色模式必需）
+    HFONT f = (HFONT)GetCurrentObject(dc, OBJ_FONT);
+    HGDIOBJ of = SelectObject(dc, f ? (HGDIOBJ)f : GetStockObject(DEFAULT_GUI_FONT));
+    TEXTMETRICW tm {};
+    GetTextMetricsW(dc, &tm);
+
+    int box = tm.tmHeight - 2;                 // 方框与文字同高（比 13px 经典位图大）
+    if (box < 12) box = 12;
+    int h = rc.bottom - rc.top;
+    if (box > h) box = h;
+    int top  = rc.top + (h - box) / 2;
+    int left = rc.left + 1;
+    RECT br { left, top, left + box, top + box };
+
+    if (radio) {                               // 单选：圆环 + 实心点
+        HGDIOBJ op = SelectObject(dc, CachedPen(checked ? COL_ACCENT : COL_BOX_BD));
+        HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Ellipse(dc, br.left, br.top, br.right, br.bottom);
+        if (checked) {
+            SelectObject(dc, CachedBrush(COL_ACCENT));
+            int in = box / 4;
+            Ellipse(dc, br.left + in, br.top + in, br.right - in, br.bottom - in);
+        }
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+    } else {                                   // 复选：圆角方块 + 白勾
+        int rad = box / 4;
+        if (rad < 3) rad = 3;
+        HGDIOBJ op = SelectObject(dc, CachedPen(checked ? COL_ACCENT : COL_BOX_BD));
+        HGDIOBJ ob = SelectObject(dc, CachedBrush(checked ? COL_ACCENT : COL_BG));
+        RoundRect(dc, br.left, br.top, br.right, br.bottom, rad, rad);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        if (checked && g_penCheck) {
+            HGDIOBJ oc = SelectObject(dc, g_penCheck);
+            MoveToEx(dc, br.left + MulDiv(box, 24, 100),
+                         br.top  + MulDiv(box, 53, 100), nullptr);
+            POINT pts[2] = {
+                { br.left + MulDiv(box, 42, 100), br.top + MulDiv(box, 71, 100) },
+                { br.left + MulDiv(box, 77, 100), br.top + MulDiv(box, 31, 100) },
+            };
+            PolylineTo(dc, pts, 2);
+            SelectObject(dc, oc);
+        }
+    }
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, COL_TEXT);
+    RECT tr { br.right + box / 2, rc.top, rc.right, rc.bottom };
+    DrawTextW(dc, text, -1, &tr,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+    if (focus) {                               // 键盘焦点：文字下划虚线框
+        HGDIOBJ op = SelectObject(dc, CachedPen(COL_MUTED));
+        HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        RECT fr { br.right + box / 4, rc.top + 1, rc.right - 1, rc.bottom - 1 };
+        RoundRect(dc, fr.left, fr.top, fr.right, fr.bottom, 4, 4);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+    }
+    SelectObject(dc, of);
+}
+
+// v2.3.1：BS_OWNERDRAW 按钮**不保存勾选状态** —— BM_SETCHECK 对它无效
+// （实测 CheckDlgButton(h,id,BST_CHECKED) 之后 BM_GETCHECK 仍返回 0），
+// 所以状态自己存在控件的 GWLP_USERDATA 里，初始化 / 绘制 / 点击 / 保存
+// 统一走这三个函数，避免「点了不打勾」。
+static bool DlgChkGet(HWND h, int id) {
+    HWND c = GetDlgItem(h, id);
+    return c && (GetWindowLongPtrW(c, GWLP_USERDATA) & 1) != 0;
+}
+static void DlgChkSet(HWND h, int id, bool on) {
+    HWND c = GetDlgItem(h, id);
+    if (!c) return;
+    SetWindowLongPtrW(c, GWLP_USERDATA, on ? 1 : 0);
+    InvalidateRect(c, nullptr, TRUE);
+}
+static void DlgThemeSet(HWND h, int mode) {      // 三个主题单选互斥
+    DlgChkSet(h, IDC_RB_THEME_L, mode == 0);
+    DlgChkSet(h, IDC_RB_THEME_D, mode == 1);
+    DlgChkSet(h, IDC_RB_THEME_S, mode == 2);
+}
+
 static INT_PTR CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM lParam) {
     // v1.13.0：字体设置临时态（对话框生存期）+ 色块画刷 + 自定义色盘记忆
     static COLORREF sTaskCol = 0, sGrpCol = 0, sDtCol = 0, sDoneGrpCol = 0;
@@ -4284,18 +4401,16 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM lParam)
         sBrGrp   = CreateSolidBrush(sGrpCol);
         sBrDt    = CreateSolidBrush(sDtCol);
         sBrGrpDone = CreateSolidBrush(sDoneGrpCol);
-        CheckDlgButton(h, IDC_CK_REMIND, g_remindOn ? BST_CHECKED : BST_UNCHECKED);
+        DlgChkSet(h, IDC_CK_REMIND, g_remindOn);
         SetDlgItemInt(h, IDC_ED_MIN, (UINT)(g_remindMin < 0 ? 0 : g_remindMin), FALSE);
         SetDlgItemInt(h, IDC_ED_TASKFONT, (UINT)g_taskFontSize, FALSE);
         SetDlgItemInt(h, IDC_ED_GRPFONT, (UINT)g_grpFontSize, FALSE);
         SetDlgItemInt(h, IDC_ED_GRPFONT_DONE, (UINT)g_doneGrpFontSize, FALSE);
         SetDlgItemInt(h, IDC_ED_DTFONT, (UINT)g_dtFontSize, FALSE);
-        CheckDlgButton(h, IDC_CK_AUTORUN, GetAutoStart() ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(h, IDC_CK_TRAYRUN, g_closeToTray ? BST_CHECKED : BST_UNCHECKED);
+        DlgChkSet(h, IDC_CK_AUTORUN, GetAutoStart());
+        DlgChkSet(h, IDC_CK_TRAYRUN, g_closeToTray);
         // v0.27：外观（主题三态）单选钮初始态
-        CheckRadioButton(h, IDC_RB_THEME_L, IDC_RB_THEME_S,
-                         (g_themeMode == 0) ? IDC_RB_THEME_L :
-                         (g_themeMode == 1) ? IDC_RB_THEME_D : IDC_RB_THEME_S);
+        DlgThemeSet(h, g_themeMode);
         {
             // v1.12.0 采集框；v0.15 起固定 Alt 修饰：控件前显示不可修改的
             // 「Alt+」文本，采集框内按 Ctrl/Shift/Win 组合一律剥掉修饰键
@@ -4309,6 +4424,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM lParam)
             SendMessageW(hk1, HKM_SETHOTKEY, MAKEWPARAM((WORD)g_hkShowVk, 0), 0);
             SendMessageW(hk2, HKM_SETHOTKEY, MAKEWPARAM((WORD)g_hkCapVk, 0), 0);
         }
+        RepaintChoiceCtrls(h);   // v2.3：状态已写入，让自绘控件按最新勾选重画
         return TRUE;
     case WM_CTLCOLORSTATIC: {
         // v1.13.0：字体颜色色块用当前颜色画刷填充
@@ -4330,7 +4446,30 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM lParam)
         return (INT_PTR)CachedBrush(COL_BG);
     case WM_CTLCOLORBTN:                 // v0.27：按钮背景刷随主题（复选/单选周围底色）
         return (INT_PTR)CachedBrush(COL_BG);
+    case WM_DRAWITEM: {                  // v2.3：自绘复选/单选（文字色跟主题）
+        const DRAWITEMSTRUCT* di = (const DRAWITEMSTRUCT*)lParam;
+        if (!di || di->CtlType != ODT_BUTTON) break;
+        int id = (int)di->CtlID;
+        bool radio = (id == IDC_RB_THEME_L || id == IDC_RB_THEME_D ||
+                      id == IDC_RB_THEME_S);
+        if (!radio && id != IDC_CK_REMIND && id != IDC_CK_AUTORUN &&
+            id != IDC_CK_TRAYRUN)
+            break;
+        wchar_t txt[192] {};
+        GetWindowTextW(di->hwndItem, txt, 192);
+        DrawDlgChoice(di->hDC, di->rcItem, txt, DlgChkGet(h, id),
+                      radio, (di->itemState & ODS_FOCUS) != 0);
+        return TRUE;
+    }
     case WM_COMMAND:
+        // v2.3：自绘的复选按钮不会自己切换状态，这里手动维护
+        if (HIWORD(w) == BN_CLICKED &&
+            (LOWORD(w) == IDC_CK_REMIND || LOWORD(w) == IDC_CK_AUTORUN ||
+             LOWORD(w) == IDC_CK_TRAYRUN)) {
+            int id = LOWORD(w);
+            DlgChkSet(h, id, !DlgChkGet(h, id));   // 自绘按钮不自动切换
+            return TRUE;
+        }
         if (LOWORD(w) == IDC_SW_TASK || LOWORD(w) == IDC_SW_GROUP ||
             LOWORD(w) == IDC_SW_DT || LOWORD(w) == IDC_SW_GROUP_DONE) {
             if (HIWORD(w) != STN_CLICKED) break;
@@ -4372,18 +4511,22 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM lParam)
             // v0.27：切外观立即生效并联存（F 行）——即使随后取消，
             // 外观选择也保留（与字体即时预览同权重）
             if (HIWORD(w) != BN_CLICKED) break;
+            // v2.3.1：自绘单选钮的互斥状态同样自己维护
             g_themeMode = (LOWORD(w) == IDC_RB_THEME_L) ? 0 :
                           (LOWORD(w) == IDC_RB_THEME_D) ? 1 : 2;
+            DlgThemeSet(h, g_themeMode);
             ApplyTheme();                    // 界面立即生效
+            // v2.3：主题色变了，整框重绘 —— 静态文本与自绘复选/单选都要换色
+            InvalidateRect(h, nullptr, TRUE);
             SaveTasks();                     // 触发一次设置保存（F 行）
             return TRUE;
         }
         if (LOWORD(w) == IDOK) {
-            g_remindOn = IsDlgButtonChecked(h, IDC_CK_REMIND) == BST_CHECKED;
+            g_remindOn = DlgChkGet(h, IDC_CK_REMIND);
             UINT mv = GetDlgItemInt(h, IDC_ED_MIN, nullptr, FALSE);
             g_remindMin = (mv > 10080) ? 10080 : (int)mv;
-            SetAutoStart(IsDlgButtonChecked(h, IDC_CK_AUTORUN) == BST_CHECKED);
-            g_closeToTray = IsDlgButtonChecked(h, IDC_CK_TRAYRUN) == BST_CHECKED;
+            SetAutoStart(DlgChkGet(h, IDC_CK_AUTORUN));
+            g_closeToTray = DlgChkGet(h, IDC_CK_TRAYRUN);
             // v1.13.0：字体大小（任务 12~22 / 分组 10~18 / 日期 10~18）与颜色
             UINT tf = GetDlgItemInt(h, IDC_ED_TASKFONT, nullptr, FALSE);
             UINT gf = GetDlgItemInt(h, IDC_ED_GRPFONT, nullptr, FALSE);
@@ -4442,7 +4585,8 @@ static void OpenSettings() {
     static std::wstring hkStat;               // 状态行持有的字符串（对话框生存期）
     hkStat = HotkeyStatusText();
     std::vector<DlgItem> items = {
-        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+        // v2.3：三个复选框 + 三个单选钮改 BS_OWNERDRAW（见 DrawDlgChoice 注释）
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
           12, 12, 206, 10, (WORD)IDC_CK_REMIND, CLS_BUTTON, L"到时间弹出提醒框" },
         { WS_CHILD|WS_VISIBLE|SS_LEFT,
           12, 31,  26, 10, 100, CLS_STATIC, L"提前" },
@@ -4450,9 +4594,9 @@ static void OpenSettings() {
           42, 29,  34, 12, (WORD)IDC_ED_MIN, CLS_EDIT, L"15" },
         { WS_CHILD|WS_VISIBLE|SS_LEFT,
           82, 31, 136, 10, 100, CLS_STATIC, L"分钟后提醒（0 = 到点即提醒）" },
-        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
           12, 49, 206, 10, (WORD)IDC_CK_AUTORUN, CLS_BUTTON, L"开机自动启动" },
-        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
           12, 67, 206, 10, (WORD)IDC_CK_TRAYRUN, CLS_BUTTON,
           L"关闭主窗口后在托盘后台运行（提醒继续生效）" },
         // v1.12.0 两个全局快捷键；v0.15 起固定 Alt 修饰 —— 采集框前显示
@@ -4513,11 +4657,11 @@ static void OpenSettings() {
         // 第一个单选钮带 WS_GROUP，切换立即生效并联存
         { WS_CHILD|WS_VISIBLE|SS_LEFT,
           12, 238, 34, 10, 100, CLS_STATIC, L"外观：" },
-        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON|WS_GROUP,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW|WS_GROUP,
           48, 237, 44, 12, (WORD)IDC_RB_THEME_L, CLS_BUTTON, L"浅色" },
-        { WS_CHILD|WS_VISIBLE|BS_AUTORADIOBUTTON,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
           96, 237, 44, 12, (WORD)IDC_RB_THEME_D, CLS_BUTTON, L"深色" },
-        { WS_CHILD|WS_VISIBLE|BS_AUTORADIOBUTTON,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
           144, 237, 80, 12, (WORD)IDC_RB_THEME_S, CLS_BUTTON, L"跟随系统" },
         { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON|WS_GROUP,
           62, 253, 48, 14, IDOK, CLS_BUTTON, L"保存" },
@@ -4671,6 +4815,10 @@ static const int IDC_DP_TIME    = 2202;  // 时间选择器
 static const int IDC_BTN_CLRDUE = 2203;  // 清除日期
 static const int IDC_DP2_DATE   = 2205;  // v0.15 完成日期编辑：日期选择器
 static const int IDC_DP2_TIME   = 2206;  // v0.15 完成日期编辑：时间选择器
+// v2.3：日期 / 时间是否启用，改用真正的复选框 —— DTS_SHOWNONE 自带的勾选框
+// 是 comctl32 内部按 96 DPI 画好再拉伸的小位图，高分屏下又小又糊
+static const int IDC_CK_DATE    = 2207;
+static const int IDC_CK_TIME    = 2208;
 
 static INT_PTR CALLBACK DateDlgProc(HWND h, UINT m, WPARAM w, LPARAM lp) {
     switch (m) {
@@ -4682,14 +4830,16 @@ static INT_PTR CALLBACK DateDlgProc(HWND h, UINT m, WPARAM w, LPARAM lp) {
         HWND dDate = GetDlgItem(h, IDC_DP_DATE);
         HWND dTime = GetDlgItem(h, IDC_DP_TIME);
         if (!t.due) {
-            // 无日期任务（点「＋ 日期」进入）：默认给出今天，时间留空，可直接调整保存
+            // 无日期任务（点「＋ 日期」进入）：默认给出今天，时间不启用，可直接调整保存
             tm n = LocalTmOf((long long)time(nullptr));
             SYSTEMTIME today {};
             today.wYear  = (WORD)(n.tm_year + 1900);
             today.wMonth = (WORD)(n.tm_mon + 1);
             today.wDay   = (WORD)n.tm_mday;
             SendMessageW(dDate, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&today);
-            SendMessageW(dTime, DTM_SETSYSTEMTIME, GDT_NONE, 0);
+            SendMessageW(dTime, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&today);
+            CheckDlgButton(h, IDC_CK_DATE, BST_CHECKED);
+            CheckDlgButton(h, IDC_CK_TIME, BST_UNCHECKED);
         } else {
             tm d = LocalTmOf(t.due);
             SYSTEMTIME st {};
@@ -4699,9 +4849,13 @@ static INT_PTR CALLBACK DateDlgProc(HWND h, UINT m, WPARAM w, LPARAM lp) {
             st.wHour   = (WORD)d.tm_hour;
             st.wMinute = (WORD)d.tm_min;
             SendMessageW(dDate, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&st);
-            SendMessageW(dTime, DTM_SETSYSTEMTIME,
-                         t.hasTime ? GDT_VALID : GDT_NONE, (LPARAM)&st);
+            SendMessageW(dTime, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&st);
+            CheckDlgButton(h, IDC_CK_DATE, BST_CHECKED);
+            CheckDlgButton(h, IDC_CK_TIME,
+                           t.hasTime ? BST_CHECKED : BST_UNCHECKED);
         }
+        // v2.3：未勾选的时间选择器置灰，视觉上明确「不含具体时间」
+        EnableWindow(dTime, IsDlgButtonChecked(h, IDC_CK_TIME) == BST_CHECKED);
         return TRUE;
     }
     case WM_COMMAND:
@@ -4710,12 +4864,14 @@ static INT_PTR CALLBACK DateDlgProc(HWND h, UINT m, WPARAM w, LPARAM lp) {
             if (idx >= 0 && idx < (int)g_tasks.size()) {
                 Task& t = g_tasks[(size_t)idx];
                 SYSTEMTIME sd {}, stt {};
-                bool hasD = SendMessageW(GetDlgItem(h, IDC_DP_DATE),
-                                         DTM_GETSYSTEMTIME, 0,
-                                         (LPARAM)&sd) == GDT_VALID;
-                bool hasT = SendMessageW(GetDlgItem(h, IDC_DP_TIME),
-                                         DTM_GETSYSTEMTIME, 0,
-                                         (LPARAM)&stt) == GDT_VALID;
+                // v2.3：日期 / 时间是否启用由前面的复选框决定（DTP 不再带
+                // DTS_SHOWNONE，DTM_GETSYSTEMTIME 恒为 GDT_VALID）
+                bool hasD = IsDlgButtonChecked(h, IDC_CK_DATE) == BST_CHECKED;
+                bool hasT = IsDlgButtonChecked(h, IDC_CK_TIME) == BST_CHECKED;
+                SendMessageW(GetDlgItem(h, IDC_DP_DATE), DTM_GETSYSTEMTIME, 0,
+                             (LPARAM)&sd);
+                SendMessageW(GetDlgItem(h, IDC_DP_TIME), DTM_GETSYSTEMTIME, 0,
+                             (LPARAM)&stt);
                 if (hasD) {
                     int hh = hasT ? stt.wHour : 9;
                     int mm = hasT ? stt.wMinute : 0;
@@ -4735,8 +4891,18 @@ static INT_PTR CALLBACK DateDlgProc(HWND h, UINT m, WPARAM w, LPARAM lp) {
             return TRUE;
         }
         if (LOWORD(w) == IDC_BTN_CLRDUE) {
-            SendMessageW(GetDlgItem(h, IDC_DP_DATE), DTM_SETSYSTEMTIME, GDT_NONE, 0);
-            SendMessageW(GetDlgItem(h, IDC_DP_TIME), DTM_SETSYSTEMTIME, GDT_NONE, 0);
+            CheckDlgButton(h, IDC_CK_DATE, BST_UNCHECKED);
+            CheckDlgButton(h, IDC_CK_TIME, BST_UNCHECKED);
+            EnableWindow(GetDlgItem(h, IDC_DP_DATE), FALSE);
+            EnableWindow(GetDlgItem(h, IDC_DP_TIME), FALSE);
+            return TRUE;
+        }
+        // v2.3：勾选/取消「日期」「时间」时启用或置灰对应选择器
+        if (HIWORD(w) == BN_CLICKED &&
+            (LOWORD(w) == IDC_CK_DATE || LOWORD(w) == IDC_CK_TIME)) {
+            HWND dp = GetDlgItem(h, LOWORD(w) == IDC_CK_DATE ? IDC_DP_DATE
+                                                             : IDC_DP_TIME);
+            EnableWindow(dp, IsDlgButtonChecked(h, LOWORD(w)) == BST_CHECKED);
             return TRUE;
         }
         if (LOWORD(w) == IDCANCEL) { EndDialog(h, IDCANCEL); return TRUE; }
@@ -4825,11 +4991,13 @@ static void OpenDateEditor(int idx) {
     if (idx < 0 || idx >= (int)g_tasks.size()) return;
     if (g_tasks[(size_t)idx].done) { OpenDoneDateEditor(idx); return; }
     std::vector<DlgItem> items = {
-        { WS_CHILD|WS_VISIBLE|SS_LEFT, 12, 15, 28, 10, 100, CLS_STATIC, L"日期" },
-        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|DTS_SHOWNONE|DTS_SHORTDATECENTURYFORMAT,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+          12, 15, 32, 10, (WORD)IDC_CK_DATE, CLS_BUTTON, L"日期" },
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|DTS_SHORTDATECENTURYFORMAT,
           46, 12, 96, 13, (WORD)IDC_DP_DATE, 0, L"", L"SysDateTimePick32" },
-        { WS_CHILD|WS_VISIBLE|SS_LEFT, 12, 34, 28, 10, 100, CLS_STATIC, L"时间" },
-        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|DTS_SHOWNONE|DTS_TIMEFORMAT,
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+          12, 34, 32, 10, (WORD)IDC_CK_TIME, CLS_BUTTON, L"时间" },
+        { WS_CHILD|WS_VISIBLE|WS_TABSTOP|DTS_TIMEFORMAT,
           46, 31, 96, 13, (WORD)IDC_DP_TIME, 0, L"", L"SysDateTimePick32" },
         { WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,
           12, 56, 52, 14, (WORD)IDC_BTN_CLRDUE, CLS_BUTTON, L"清除日期" },
@@ -4845,7 +5013,7 @@ static void OpenDateEditor(int idx) {
 }
 
 // ---------------------------- 输入框光标垂直居中 ----------------------------
-static void CenterInput() {
+static void CenterInput(bool force) {
     if (!g_input) return;
     // v1.13.14：输入法组词期间绝不动格式矩形 —— EM_SETRECT 会让 EDIT 重排，
     // 把组合串的插入点甩回开头（输入「后天下午」时最明显）
@@ -4874,11 +5042,10 @@ static void CenterInput() {
     // v1.13.14：格式矩形没变就不要重设 —— 每次键入都会走 EN_CHANGE ->
     // UpdateInputSize -> CenterInput，而 EM_SETRECT 会让 EDIT 重算排版，
     // 输入「后天下午」这类会被实时识别的词时，光标会被甩回文本开头
-    static RECT s_lastRect {};
-    static bool s_lastValid = false;
-    if (s_lastValid && EqualRect(&rc2, &s_lastRect)) return;
-    s_lastRect  = rc2;
-    s_lastValid = true;
+    // v2.1：force = true 时无视缓存强制重设（换字体 / 切主题后补救）
+    if (!force && s_inFmtValid && EqualRect(&rc2, &s_inFmtRect)) return;
+    s_inFmtRect  = rc2;
+    s_inFmtValid = true;
 
     // v1.13.17：删掉「先存选区、SETRECT 后写回」这段 —— 写回的是读取瞬间的值，
     // 如果那一刻正处在输入法提交过程中，读到的是组合串起点，写回去等于把插入
@@ -6184,6 +6351,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         bool sel = (dis->itemState & ODS_SELECTED) != 0;
         bool dis_ = (dis->itemState & ODS_DISABLED) != 0;
         bool primary = (dis->CtlID == IDC_BTN_ADD);   // 主操作 = 最高频的「＋ 添加」
+        // v2.1：先铺父窗口底色。自绘按钮的底色由系统按 BTNFACE 预先擦除，
+        // 深色模式下这块浅灰就露了出来 ——「⋯」按钮整块发白、主按钮圆角外
+        // 四个角出现白线。铺一层 COL_BG 后，圆角外与未绘制区域与页面底一致
+        FillSolid(dis->hDC, dis->rcItem, COL_BG);
         if (dis->CtlID == IDC_BTN_MORE) {             // v1.13.11：右上角「⋯」
             RECT r = dis->rcItem;
             if (g_btnMoreHot) {                       // 悬停：浅灰圆角底
@@ -6251,6 +6422,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SelectObject(dis->hDC, of);
         return TRUE;
     }
+
+    case WM_CTLCOLORBTN:                 // v2.1：自绘按钮的系统预擦除底色
+        // 不返回主题色时，系统用 COLOR_BTNFACE（浅灰）擦按钮，
+        // 深色模式下就会在圆角外和「⋯」按钮底上露出白色块/白线
+        return (LRESULT)CachedBrush(COL_BG);
 
     case WM_CTLCOLOREDIT: {              // v0.27：主输入框底色/文字色随主题
         HDC hdc = (HDC)wParam;           //（行内编辑框由列表窗口 WM_CTLCOLOREDIT 处理）
